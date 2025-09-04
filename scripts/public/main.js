@@ -42,8 +42,8 @@ class NumberComponent extends Rete.Component {
 
 (async () => {
   const editor = new Rete.NodeEditor('demo@0.1.0', container);
-  editor.use(ConnectionPlugin);
-  editor.use(VueRenderPlugin);
+  editor.use(ConnectionPlugin.default);
+  editor.use(VueRenderPlugin.default);
   const engine = new Rete.Engine('demo@0.1.0');
   const comp = new NumberComponent();
   editor.register(comp);
