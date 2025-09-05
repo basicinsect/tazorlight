@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Tazorlight Demo</title>
+
+    <!-- Vue 2 + Rete v1 core only (no plugins here) -->
+    <script src="https://unpkg.com/vue@2.6.14/dist/vue.min.js"></script>
+    <script src="https://unpkg.com/rete@1.4.4/build/rete.min.js"></script>
+
+    <style>
+      html, body { height: 100%; margin: 0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+      .toolbar { padding: 10px; border-bottom: 1px solid #eee; display: flex; gap: 8px; align-items: center; }
+      .toolbar button { padding: 6px 10px; border: 1px solid #ddd; border-radius: 6px; background: #fafafa; cursor: pointer; }
+      .toolbar button:hover { background: #f0f0f0; }
+      #rete { width: 100%; height: calc(100vh - 90px); }
+      pre#results { margin: 0; height: 80px; overflow: auto; background: #111; color: #0f0; padding: 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="toolbar">
+      <button id="btn-add-number">Add Number</button>
+      <button id="btn-add-string">Add String</button>
+      <button id="btn-add-add">Add (a+b)</button>
+      <button id="btn-add-mul">Multiply (a*b)</button>
+      <button id="btn-add-tostr">ToString</button>
+      <button id="btn-add-concat">Concat</button>
+      <button id="btn-add-output-num">Result (Number)</button>
+      <button id="btn-add-output-str">Result (String)</button>
+      <button id="btn-run" style="margin-left:auto;">Run ▶</button>
+    </div>
+
+    <div id="rete"></div>
+    <pre id="results">Results will appear here…</pre>
+
+    <!-- IMPORTANT: classic script, not type="module" -->
+    <script src="/main.js"></script>
+  </body>
+</html>
