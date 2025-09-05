@@ -44,11 +44,12 @@
     throw new Error(`${label} not loaded. Tried:\n${urls.join('\n')}\n${lastErr ? lastErr.message : ''}`);
   }
 
-  // Load v1 plugins with fallbacks (unpkg → jsDelivr)
+  // Load v1 plugins with fallbacks (local vendor → unpkg → jsDelivr)
   const ConnectionPlugin = await ensurePlugin(
     'rete-connection-plugin v0.9 UMD',
     ['ConnectionPlugin', 'ReteConnectionPlugin', 'connectionPlugin'],
     [
+      '/vendor/connection-plugin.min.js',
       'https://unpkg.com/rete-connection-plugin@0.9.0/build/connection-plugin.min.js',
       'https://cdn.jsdelivr.net/npm/rete-connection-plugin@0.9.0/build/connection-plugin.min.js'
     ]
@@ -58,6 +59,7 @@
     'rete-vue-render-plugin v0.5 UMD',
     ['VueRenderPlugin', 'ReteVueRenderPlugin', 'vueRenderPlugin'],
     [
+      '/vendor/vue-render-plugin.min.js',
       'https://unpkg.com/rete-vue-render-plugin@0.5.2/build/vue-render-plugin.min.js',
       'https://cdn.jsdelivr.net/npm/rete-vue-render-plugin@0.5.2/build/vue-render-plugin.min.js'
     ]
