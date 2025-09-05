@@ -1,11 +1,10 @@
 #!/bin/bash
 set -e
 
-# Ensure required system packages are present
 apt-get update
 apt-get install -y git build-essential nodejs npm
 
-# Build and install LuaJIT from source if not already available
+# LuaJIT for FFI (unchanged)
 if ! command -v luajit >/dev/null 2>&1; then
   if [ ! -d luajit ]; then
     git clone https://luajit.org/git/luajit.git
@@ -15,13 +14,21 @@ if ! command -v luajit >/dev/null 2>&1; then
   popd
 fi
 
-# Install Node dependencies
+# Taskflow (header-only)
+if [ ! -d third_party/taskflow ]; then
+  git clone --depth 1 https://github.com/taskflow/taskflow.git third_party/taskflow
+fi
+
+# Node deps
 pushd scripts
 npm install
 popd
 
-# Build C++ shared library
-g++ -fPIC -shared engine_api.cpp -o libengine.so
+# Build shared library with Taskflow
+g++ -std=c++17 -fPIC -shared engine_api.cpp -Ithird_party/taskflow -pthread -o libengine.so
 
-# Start the server
+# Optional: copy next to scripts for fallback lookups
+cp -f libengine.so scripts/libengine.so
+
+# Run server
 node scripts/server.js
