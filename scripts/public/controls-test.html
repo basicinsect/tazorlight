@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Dynamic Controls Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .control-test { border: 1px solid #ccc; padding: 15px; margin: 10px 0; }
+        .control { margin: 10px; padding: 10px; background: #f9f9f9; border: 1px solid #ddd; }
+        .control label { display: block; font-weight: bold; margin-bottom: 5px; }
+        input, select { width: 200px; padding: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Dynamic Parameter Controls Test</h1>
+    
+    <div class="control-test">
+        <h3>Simulated Dynamic Controls for Node Types</h3>
+        <p>This demonstrates how the dynamic controls would render based on NodeSpec parameters:</p>
+        <div id="controls-container"></div>
+        <button onclick="generateControls()">Generate Controls</button>
+    </div>
+
+    <script>
+        async function generateControls() {
+            const container = document.getElementById('controls-container');
+            container.innerHTML = '';
+            
+            try {
+                const typesResponse = await fetch('/types');
+                const types = await typesResponse.json();
+                
+                for (const typeName of types) {
+                    const specResponse = await fetch(`/types/${typeName}`);
+                    const spec = await specResponse.json();
+                    
+                    if (spec.params && spec.params.length > 0) {
+                        const nodeDiv = document.createElement('div');
+                        nodeDiv.className = 'control';
+                        nodeDiv.innerHTML = `<h4>${typeName} Node Parameters:</h4>`;
+                        
+                        spec.params.forEach(param => {
+                            const controlDiv = document.createElement('div');
+                            const label = document.createElement('label');
+                            label.textContent = `${param.name} (${param.description})`;
+                            controlDiv.appendChild(label);
+                            
+                            let inputElement;
+                            
+                            if (param.type === 'number') {
+                                inputElement = document.createElement('input');
+                                inputElement.type = 'number';
+                                inputElement.value = param.default || 0;
+                                inputElement.placeholder = `Default: ${param.default}`;
+                            } else if (param.type === 'bool') {
+                                inputElement = document.createElement('input');
+                                inputElement.type = 'checkbox';
+                                inputElement.checked = param.default || false;
+                            } else if (param.enum && param.enum.length > 0) {
+                                inputElement = document.createElement('select');
+                                
+                                // Add default empty option
+                                const emptyOption = document.createElement('option');
+                                emptyOption.value = '';
+                                emptyOption.textContent = '[Select]';
+                                inputElement.appendChild(emptyOption);
+                                
+                                // Add enum options
+                                param.enum.forEach(option => {
+                                    const optionElement = document.createElement('option');
+                                    optionElement.value = option;
+                                    optionElement.textContent = option;
+                                    if (option === param.default) {
+                                        optionElement.selected = true;
+                                    }
+                                    inputElement.appendChild(optionElement);
+                                });
+                            } else {
+                                // string or unknown - default to text
+                                inputElement = document.createElement('input');
+                                inputElement.type = 'text';
+                                inputElement.value = param.default || '';
+                                inputElement.placeholder = `Default: ${param.default || '""'}`;
+                            }
+                            
+                            controlDiv.appendChild(inputElement);
+                            nodeDiv.appendChild(controlDiv);
+                        });
+                        
+                        container.appendChild(nodeDiv);
+                    }
+                }
+            } catch (error) {
+                container.innerHTML = `<div class="control">Error: ${error.message}</div>`;
+            }
+        }
+    </script>
+</body>
+</html>

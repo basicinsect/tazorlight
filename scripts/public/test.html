@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Node Types API Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .api-test { border: 1px solid #ccc; padding: 15px; margin: 10px 0; }
+        .result { background: #f5f5f5; padding: 10px; white-space: pre-wrap; overflow-x: auto; }
+        button { padding: 8px 15px; margin: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <h1>TazorLight Node Types API Test</h1>
+    
+    <div class="api-test">
+        <h3>1. List All Node Types</h3>
+        <button onclick="testListTypes()">Test /types</button>
+        <div id="types-result" class="result"></div>
+    </div>
+    
+    <div class="api-test">
+        <h3>2. Get Node Type Specs</h3>
+        <button onclick="testNodeSpec('Number')">Get Number Spec</button>
+        <button onclick="testNodeSpec('Add')">Get Add Spec</button>
+        <button onclick="testNodeSpec('String')">Get String Spec</button>
+        <div id="spec-result" class="result"></div>
+    </div>
+    
+    <div class="api-test">
+        <h3>3. Dynamic Component Generation Test</h3>
+        <button onclick="testDynamicGeneration()">Generate Components</button>
+        <div id="generation-result" class="result"></div>
+    </div>
+
+    <script>
+        async function testListTypes() {
+            try {
+                const response = await fetch('/types');
+                const types = await response.json();
+                document.getElementById('types-result').textContent = 
+                    'Success!\nTypes: ' + JSON.stringify(types, null, 2);
+            } catch (error) {
+                document.getElementById('types-result').textContent = 
+                    'Error: ' + error.message;
+            }
+        }
+        
+        async function testNodeSpec(typeName) {
+            try {
+                const response = await fetch(`/types/${typeName}`);
+                const spec = await response.json();
+                document.getElementById('spec-result').textContent = 
+                    `${typeName} Spec:\n` + JSON.stringify(spec, null, 2);
+            } catch (error) {
+                document.getElementById('spec-result').textContent = 
+                    'Error: ' + error.message;
+            }
+        }
+        
+        async function testDynamicGeneration() {
+            try {
+                const typesResponse = await fetch('/types');
+                const types = await typesResponse.json();
+                
+                let result = 'Dynamic Component Generation Test:\n\n';
+                
+                for (const typeName of types) {
+                    const specResponse = await fetch(`/types/${typeName}`);
+                    const spec = await specResponse.json();
+                    
+                    result += `${typeName}:\n`;
+                    result += `  Inputs: ${spec.inputs.length} (${spec.inputs.join(', ')})\n`;
+                    result += `  Outputs: ${spec.outputs.length} (${spec.outputs.join(', ')})\n`;
+                    result += `  Parameters: ${spec.params.length}\n`;
+                    
+                    spec.params.forEach(param => {
+                        result += `    - ${param.name} (${param.type}): ${param.description}\n`;
+                        result += `      Default: ${JSON.stringify(param.default)}\n`;
+                        if (param.enum && param.enum.length > 0) {
+                            result += `      Options: ${param.enum.join(', ')}\n`;
+                        }
+                    });
+                    result += '\n';
+                }
+                
+                document.getElementById('generation-result').textContent = result;
+            } catch (error) {
+                document.getElementById('generation-result').textContent = 
+                    'Error: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>
