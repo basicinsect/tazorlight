@@ -58,11 +58,9 @@ end
 
 local lib
 if env_path then lib = try_load(env_path) end
-if not lib then lib = try_load("./libengine.so") end                          -- server cwd = repo root
-if not lib then lib = try_load(script_dir.."/../../libengine.so") end         -- from scripts/lua/
-if not lib then lib = try_load(script_dir.."/../libengine.so") end            -- scripts/
-if not lib then lib = try_load(script_dir.."/libengine.so") end               -- same dir
-if not lib then lib = try_load("libengine.so") end                            -- system path
+if not lib then lib = try_load("./libengine.so") end                          -- repo root (CWD)
+if not lib then lib = try_load("scripts/libengine.so") end                    -- scripts/
+if not lib then lib = try_load("scripts/lua/../../libengine.so") end          -- scripts/lua/../../
 
 if not lib then
   err_json("failed to load libengine.so", tried, errors)
