@@ -41,6 +41,10 @@ const char* engine_graph_get_output_string(engine_graph_t g, int index);
 
 const char* engine_last_error(void);
 
+// NodeSpec registry C API
+const char* engine_list_types(void);
+const char* engine_get_type_spec(const char* typeName);
+
 #ifdef __cplusplus
 }
 #endif
