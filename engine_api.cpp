@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -45,15 +46,114 @@ struct Node {
 
 using ComputeFn = bool(*)(Node& n, std::string& err);
 
+struct ParamSpec {
+    std::string name;
+    Type type;
+    Value defaultValue;
+    std::vector<std::string> enumOptions;  // empty if not an enum
+    std::string description;
+};
+
 struct NodeType {
     std::string name;               // "Number", "Add", ...
     std::vector<Type> inputs;       // arity and types
     std::vector<Type> outputs;
+    std::vector<ParamSpec> params;  // parameter specifications
+    std::string version;            // version info
+    std::string description;        // description of the node
     ComputeFn compute;
 };
 
 struct Edge { int fromNode; int fromOut; int toNode; int toIn; };
 struct OutputPin { int node; int outIdx; };
+
+// JSON generation helpers
+static std::string escapeJson(const std::string& str) {
+    std::string escaped;
+    for (char c : str) {
+        if (c == '"') escaped += "\\\"";
+        else if (c == '\\') escaped += "\\\\";
+        else if (c == '\b') escaped += "\\b";
+        else if (c == '\f') escaped += "\\f";
+        else if (c == '\n') escaped += "\\n";
+        else if (c == '\r') escaped += "\\r";
+        else if (c == '\t') escaped += "\\t";
+        else escaped += c;
+    }
+    return escaped;
+}
+
+static std::string typeToString(Type t) {
+    switch (t) {
+        case Type::Number: return "number";
+        case Type::String: return "string";
+        case Type::Bool: return "bool";
+        default: return "unknown";
+    }
+}
+
+static std::string valueToJson(const Value& v) {
+    switch (v.type) {
+        case Type::Number: 
+            return std::to_string(std::get<double>(v.data));
+        case Type::String: 
+            return "\"" + escapeJson(std::get<std::string>(v.data)) + "\"";
+        case Type::Bool: 
+            return std::get<bool>(v.data) ? "true" : "false";
+        default: 
+            return "null";
+    }
+}
+
+static std::string nodeTypeToJson(const NodeType& nodeType) {
+    std::ostringstream json;
+    json << "{";
+    json << "\"name\":\"" << escapeJson(nodeType.name) << "\",";
+    json << "\"version\":\"" << escapeJson(nodeType.version) << "\",";
+    json << "\"description\":\"" << escapeJson(nodeType.description) << "\",";
+    
+    // Inputs
+    json << "\"inputs\":[";
+    for (size_t i = 0; i < nodeType.inputs.size(); ++i) {
+        if (i > 0) json << ",";
+        json << "\"" << typeToString(nodeType.inputs[i]) << "\"";
+    }
+    json << "],";
+    
+    // Outputs  
+    json << "\"outputs\":[";
+    for (size_t i = 0; i < nodeType.outputs.size(); ++i) {
+        if (i > 0) json << ",";
+        json << "\"" << typeToString(nodeType.outputs[i]) << "\"";
+    }
+    json << "],";
+    
+    // Parameters
+    json << "\"params\":[";
+    for (size_t i = 0; i < nodeType.params.size(); ++i) {
+        if (i > 0) json << ",";
+        const auto& param = nodeType.params[i];
+        json << "{";
+        json << "\"name\":\"" << escapeJson(param.name) << "\",";
+        json << "\"type\":\"" << typeToString(param.type) << "\",";
+        json << "\"default\":" << valueToJson(param.defaultValue) << ",";
+        json << "\"description\":\"" << escapeJson(param.description) << "\"";
+        
+        if (!param.enumOptions.empty()) {
+            json << ",\"enum\":[";
+            for (size_t j = 0; j < param.enumOptions.size(); ++j) {
+                if (j > 0) json << ",";
+                json << "\"" << escapeJson(param.enumOptions[j]) << "\"";
+            }
+            json << "]";
+        }
+        json << "}";
+    }
+    json << "]";
+    
+    json << "}";
+    return json.str();
+}
 
 struct Graph {
     std::unordered_map<int, std::unique_ptr<Node>> nodes;
@@ -73,6 +173,8 @@ struct Graph {
     void registerBuiltins() {
         registry["Number"] = NodeType{
             "Number", {}, {Type::Number},
+            {ParamSpec{"value", Type::Number, Value::num(0.0), {}, "The numeric value"}},
+            "1.0.0", "A constant number node",
             [](Node& n, std::string&)->bool {
                 double v = 0.0;
                 auto it = n.params.find("value");
@@ -83,6 +185,8 @@ struct Graph {
         };
         registry["String"] = NodeType{
             "String", {}, {Type::String},
+            {ParamSpec{"text", Type::String, Value::str(""), {}, "The string value"}},
+            "1.0.0", "A constant string node",
             [](Node& n, std::string&)->bool {
                 std::string s;
                 auto it = n.params.find("text");
@@ -93,6 +197,8 @@ struct Graph {
         };
         registry["Add"] = NodeType{
             "Add", {Type::Number, Type::Number}, {Type::Number},
+            {}, // no parameters
+            "1.0.0", "Adds two numbers together",
             [](Node& n, std::string& err)->bool {
                 if (n.inputValues.size() != 2 ||
                     n.inputValues[0].type != Type::Number ||
@@ -105,6 +211,8 @@ struct Graph {
         };
         registry["Multiply"] = NodeType{
             "Multiply", {Type::Number, Type::Number}, {Type::Number},
+            {}, // no parameters
+            "1.0.0", "Multiplies two numbers together",
             [](Node& n, std::string& err)->bool {
                 if (n.inputValues.size() != 2 ||
                     n.inputValues[0].type != Type::Number ||
@@ -117,15 +225,39 @@ struct Graph {
         };
         registry["ToString"] = NodeType{
             "ToString", {Type::Number}, {Type::String},
+            {ParamSpec{"format", Type::String, Value::str("default"), {"default", "fixed", "scientific", "hex"}, "Number formatting style"}},
+            "1.0.0", "Converts a number to string with formatting options",
             [](Node& n, std::string& err)->bool {
                 if (n.inputValues.size() != 1 || n.inputValues[0].type != Type::Number) { err = "ToString: invalid input"; return false; }
-                std::ostringstream os; os << std::get<double>(n.inputValues[0].data);
+                
+                // Get format parameter
+                std::string format = "default";
+                auto it = n.params.find("format");
+                if (it != n.params.end() && it->second.type == Type::String) {
+                    format = std::get<std::string>(it->second.data);
+                }
+                
+                double value = std::get<double>(n.inputValues[0].data);
+                std::ostringstream os;
+                
+                if (format == "fixed") {
+                    os << std::fixed << value;
+                } else if (format == "scientific") {
+                    os << std::scientific << value;
+                } else if (format == "hex") {
+                    os << std::hex << (int)value;
+                } else {
+                    os << value; // default
+                }
+                
                 n.outputValues.assign(1, Value::str(os.str()));
                 return true;
             }
         };
         registry["Concat"] = NodeType{
             "Concat", {Type::String, Type::String}, {Type::String},
+            {}, // no parameters
+            "1.0.0", "Concatenates two strings",
             [](Node& n, std::string& err)->bool {
                 if (n.inputValues.size() != 2 ||
                     n.inputValues[0].type != Type::String ||
@@ -138,6 +270,8 @@ struct Graph {
         };
         registry["OutputNumber"] = NodeType{
             "OutputNumber", {Type::Number}, {Type::Number},
+            {}, // no parameters
+            "1.0.0", "Outputs a number value",
             [](Node& n, std::string& err)->bool {
                 if (n.inputValues.size() != 1 || n.inputValues[0].type != Type::Number) { err = "OutputNumber expects Number"; return false; }
                 n.outputValues.assign(1, n.inputValues[0]);
@@ -146,6 +280,8 @@ struct Graph {
         };
         registry["OutputString"] = NodeType{
             "OutputString", {Type::String}, {Type::String},
+            {}, // no parameters
+            "1.0.0", "Outputs a string value",
             [](Node& n, std::string& err)->bool {
                 if (n.inputValues.size() != 1 || n.inputValues[0].type != Type::String) { err = "OutputString expects String"; return false; }
                 n.outputValues.assign(1, n.inputValues[0]);
@@ -438,5 +574,56 @@ const char* engine_graph_get_output_string(engine_graph_t g, int index) {
 }
 
 const char* engine_last_error(void) { return eng::g_last_error.c_str(); }
+
+const char* engine_list_types(void) {
+    static thread_local std::string typesList;
+    // Create a simple global registry for access without a graph instance
+    static std::once_flag registryInitialized;
+    static std::unordered_map<std::string, NodeType> globalRegistry;
+    
+    std::call_once(registryInitialized, []() {
+        Graph tempGraph; // This will call registerBuiltins()
+        globalRegistry = tempGraph.registry;
+    });
+    
+    std::ostringstream json;
+    json << "[";
+    bool first = true;
+    for (const auto& pair : globalRegistry) {
+        if (!first) json << ",";
+        json << "\"" << eng::escapeJson(pair.first) << "\"";
+        first = false;
+    }
+    json << "]";
+    
+    typesList = json.str();
+    return typesList.c_str();
+}
+
+const char* engine_get_type_spec(const char* typeName) {
+    if (!typeName) { 
+        eng::c_error("engine_get_type_spec: null typeName"); 
+        return nullptr; 
+    }
+    
+    static thread_local std::string typeSpec;
+    // Create a simple global registry for access without a graph instance
+    static std::once_flag registryInitialized;
+    static std::unordered_map<std::string, NodeType> globalRegistry;
+    
+    std::call_once(registryInitialized, []() {
+        Graph tempGraph; // This will call registerBuiltins()
+        globalRegistry = tempGraph.registry;
+    });
+    
+    auto it = globalRegistry.find(typeName);
+    if (it == globalRegistry.end()) {
+        eng::c_error(std::string("engine_get_type_spec: unknown type '") + typeName + "'");
+        return nullptr;
+    }
+    
+    typeSpec = eng::nodeTypeToJson(it->second);
+    return typeSpec.c_str();
+}
 
 } // extern "C"
