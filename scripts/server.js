@@ -132,10 +132,7 @@ app.get('/types/:typeName', (req, res) => {
 });
 
 app.post('/run', express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-  const contentType = req.get('Content-Type') || '';
-  const rawBody = req.body || Buffer.alloc(0);
-  const plan = rawBody.toString('utf8');
-  
+  const plan = req.body ? req.body.toString('utf8') : '';
   const luaScript = path.join(__dirname, 'lua', 'run_graph.lua');
 
   const luajitCmd = resolveLuajit();
