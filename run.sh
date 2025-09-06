@@ -15,8 +15,9 @@ if ! command -v luajit >/dev/null 2>&1; then
 fi
 
 # Taskflow (header-only)
-if [ ! -d third_party/taskflow ]; then
-  git clone --depth 1 https://github.com/taskflow/taskflow.git third_party/taskflow
+if [ ! -d third_party/taskflow ] || [ ! -f third_party/taskflow/taskflow/taskflow.hpp ]; then
+  rm -rf third_party/taskflow
+  git clone --depth 1 --branch v3.7.0 https://github.com/taskflow/taskflow.git third_party/taskflow
 fi
 
 # Node deps
