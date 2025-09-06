@@ -32,6 +32,133 @@ local function json_escape(s)
   s = s:gsub('\\','\\\\'):gsub('"','\\"'):gsub('\b','\\b'):gsub('\f','\\f'):gsub('\n','\\n'):gsub('\r','\\r'):gsub('\t','\\t')
   return s
 end
+
+-- Minimal JSON parser for our specific Graph JSON v1 format
+local function parse_json(json_str)
+  local trimmed = json_str:match("^%s*(.-)%s*$")
+  if not trimmed:match("^%s*{") then
+    return nil -- Not JSON
+  end
+  
+  -- Simple recursive descent parser for our specific JSON structure
+  local pos = 1
+  local len = #trimmed
+  
+  local function skip_whitespace()
+    while pos <= len and trimmed:sub(pos, pos):match("%s") do
+      pos = pos + 1
+    end
+  end
+  
+  local function parse_value()
+    skip_whitespace()
+    if pos > len then return nil end
+    
+    local char = trimmed:sub(pos, pos)
+    
+    if char == '"' then
+      -- Parse string
+      pos = pos + 1
+      local start = pos
+      while pos <= len and trimmed:sub(pos, pos) ~= '"' do
+        pos = pos + 1
+      end
+      if pos > len then return nil end
+      local str = trimmed:sub(start, pos - 1)
+      pos = pos + 1
+      return str
+    elseif char == '{' then
+      -- Parse object
+      pos = pos + 1
+      local obj = {}
+      skip_whitespace()
+      if pos <= len and trimmed:sub(pos, pos) == '}' then
+        pos = pos + 1
+        return obj
+      end
+      
+      while pos <= len do
+        skip_whitespace()
+        -- Parse key
+        if trimmed:sub(pos, pos) ~= '"' then return nil end
+        local key = parse_value()
+        if not key then return nil end
+        
+        skip_whitespace()
+        if pos > len or trimmed:sub(pos, pos) ~= ':' then return nil end
+        pos = pos + 1
+        
+        -- Parse value
+        local value = parse_value()
+        if value == nil then return nil end
+        obj[key] = value
+        
+        skip_whitespace()
+        if pos > len then return nil end
+        
+        if trimmed:sub(pos, pos) == '}' then
+          pos = pos + 1
+          return obj
+        elseif trimmed:sub(pos, pos) == ',' then
+          pos = pos + 1
+        else
+          return nil
+        end
+      end
+      return nil
+    elseif char == '[' then
+      -- Parse array
+      pos = pos + 1
+      local arr = {}
+      skip_whitespace()
+      if pos <= len and trimmed:sub(pos, pos) == ']' then
+        pos = pos + 1
+        return arr
+      end
+      
+      while pos <= len do
+        local value = parse_value()
+        if value == nil then return nil end
+        table.insert(arr, value)
+        
+        skip_whitespace()
+        if pos > len then return nil end
+        
+        if trimmed:sub(pos, pos) == ']' then
+          pos = pos + 1
+          return arr
+        elseif trimmed:sub(pos, pos) == ',' then
+          pos = pos + 1
+        else
+          return nil
+        end
+      end
+      return nil
+    elseif char:match("[%d%-]") then
+      -- Parse number
+      local start = pos
+      if char == '-' then pos = pos + 1 end
+      while pos <= len and trimmed:sub(pos, pos):match("[%d%.]") do
+        pos = pos + 1
+      end
+      local num_str = trimmed:sub(start, pos - 1)
+      return tonumber(num_str)
+    elseif trimmed:sub(pos, pos + 3) == "true" then
+      pos = pos + 4
+      return true
+    elseif trimmed:sub(pos, pos + 4) == "false" then
+      pos = pos + 5
+      return false
+    elseif trimmed:sub(pos, pos + 3) == "null" then
+      pos = pos + 4
+      return nil
+    end
+    
+    return nil
+  end
+  
+  return parse_value()
+end
 local function err_json(msg, tried, errs)
   local extra = ""
   if tried and #tried > 0 then
@@ -72,24 +199,76 @@ local function read_all_stdin()
   return all or ""
 end
 
-local function parse_and_build(plan)
-  local g = lib.engine_graph_create()
-  if g == nil then
-    err_json("engine_graph_create failed")
+local function parse_json_plan(g, data, ensure_ok)
+  -- Validate JSON structure
+  if type(data) ~= "table" then
+    err_json("Invalid JSON: root must be object")
+    lib.engine_graph_destroy(g)
     return nil
   end
-
-  local function ensure_ok(rc, ctx)
-    if rc ~= 0 then
-      local cstr = lib.engine_last_error()
-      local msg = cstr ~= nil and ffi.string(cstr) or ("unknown error @ "..ctx)
-      err_json(ctx..": "..msg)
-      lib.engine_graph_destroy(g)
-      return false
-    end
-    return true
+  
+  if data.version ~= 1 then
+    err_json("Unsupported plan version: " .. tostring(data.version))
+    lib.engine_graph_destroy(g)
+    return nil
   end
+  
+  local nodes = data.nodes or {}
+  local edges = data.edges or {}
+  local dataEdges = edges.data or {}
+  local outputs = data.outputs or {}
+  
+  -- Add nodes
+  for _, node in ipairs(nodes) do
+    local id = node.id
+    local nodeType = node.type
+    local params = node.params or {}
+    
+    if not ensure_ok(lib.engine_graph_add_node_with_id(g, id, nodeType, nil), "add_node "..nodeType) then 
+      return nil 
+    end
+    
+    -- Set parameters
+    for key, value in pairs(params) do
+      local num = tonumber(value)
+      if num then
+        if not ensure_ok(lib.engine_graph_set_param_number(g, id, key, num), "set_param_number "..key) then 
+          return nil 
+        end
+      else
+        if not ensure_ok(lib.engine_graph_set_param_string(g, id, key, tostring(value)), "set_param_string "..key) then 
+          return nil 
+        end
+      end
+    end
+  end
+  
+  -- Add connections
+  for _, edge in ipairs(dataEdges) do
+    local fromNode = edge.from or edge["from"]
+    local fromOutput = edge.fromOutput or edge["fromOutput"] or 0
+    local toNode = edge.to or edge["to"]
+    local toInput = edge.toInput or edge["toInput"] or 0
+    
+    if not ensure_ok(lib.engine_graph_connect(g, fromNode, fromOutput, toNode, toInput), "connect") then 
+      return nil 
+    end
+  end
+  
+  -- Add outputs
+  for _, output in ipairs(outputs) do
+    local nodeId = output.node or output["node"]
+    local outputIdx = output.output or output["output"] or 0
+    
+    if not ensure_ok(lib.engine_graph_add_output(g, nodeId, outputIdx), "add_output") then 
+      return nil 
+    end
+  end
+  
+  return g
+end
 
+local function parse_text_plan(g, plan, ensure_ok)
   for line in plan:gmatch("[^\r\n]+") do
     line = line:match("^%s*(.-)%s*$")
     if line ~= "" then
@@ -129,6 +308,34 @@ local function parse_and_build(plan)
   end
 
   return g
+end
+
+local function parse_and_build(plan)
+  local g = lib.engine_graph_create()
+  if g == nil then
+    err_json("engine_graph_create failed")
+    return nil
+  end
+
+  local function ensure_ok(rc, ctx)
+    if rc ~= 0 then
+      local cstr = lib.engine_last_error()
+      local msg = cstr ~= nil and ffi.string(cstr) or ("unknown error @ "..ctx)
+      err_json(ctx..": "..msg)
+      lib.engine_graph_destroy(g)
+      return false
+    end
+    return true
+  end
+
+  -- Try to parse as JSON first
+  local json_data, json_err = parse_json(plan)
+  if json_data then
+    return parse_json_plan(g, json_data, ensure_ok)
+  end
+  
+  -- Fall back to text format
+  return parse_text_plan(g, plan, ensure_ok)
 end
 
 local function run_and_emit_json(g)

@@ -304,21 +304,81 @@
     process();
   });
 
-  // export plan for backend
-  function exportPlan() {
+  // export plan for backend - supports both JSON v1 and legacy text format
+  function exportPlan(useLegacyFormat = false) {
     const j = editor.toJSON();
     const nodes = j.nodes || {};
 
-    const lines = [];
-    lines.push(`NODES ${Object.keys(nodes).length}`);
+    if (useLegacyFormat) {
+      // Legacy text format
+      const lines = [];
+      lines.push(`NODES ${Object.keys(nodes).length}`);
 
+      const outIdxOf = (node, outputKey) => Object.keys(node.outputs).indexOf(outputKey);
+      const inIdxOf  = (node, inputKey)  => Object.keys(node.inputs).indexOf(inputKey);
+
+      for (const idStr of Object.keys(nodes)) {
+        const id = +idStr;
+        const n = nodes[idStr];
+        const tail = [];
+        
+        // Extract parameters from node data based on component spec
+        const component = comps[n.name];
+        if (component && component.typeSpec && component.typeSpec.params) {
+          component.typeSpec.params.forEach(paramSpec => {
+            const value = n.data[paramSpec.name];
+            if (value !== undefined && value !== null) {
+              if (paramSpec.type === 'string') {
+                // Handle strings with spaces
+                tail.push(`${paramSpec.name}=${String(value).replace(/\s+/g,'_')}`);
+              } else {
+                tail.push(`${paramSpec.name}=${value}`);
+              }
+            }
+          });
+        }
+        
+        lines.push(`NODE ${id} ${n.name}${tail.length ? ' ' + tail.join(' ') : ''}`);
+      }
+
+      for (const idStr of Object.keys(nodes)) {
+        const id = +idStr;
+        const n = nodes[idStr];
+        for (const [inKey, inObj] of Object.entries(n.inputs)) {
+          const idxIn = Math.max(0, inIdxOf(n, inKey));
+          for (const c of inObj.connections || []) {
+            const fromId = c.node;
+            const fromNode = nodes[String(fromId)];
+            const idxOut = Math.max(0, outIdxOf(fromNode, c.output));
+            lines.push(`CONNECTION ${fromId} ${idxOut} ${id} ${idxIn}`);
+          }
+        }
+      }
+
+      for (const idStr of Object.keys(nodes)) {
+        const n = nodes[idStr];
+        if (n.name === 'OutputNumber' || n.name === 'OutputString') {
+          lines.push(`OUTPUT ${+idStr} 0`);
+        }
+      }
+
+      return lines.join('\n') + '\n';
+    }
+
+    // JSON v1 format (default)
     const outIdxOf = (node, outputKey) => Object.keys(node.outputs).indexOf(outputKey);
     const inIdxOf  = (node, inputKey)  => Object.keys(node.inputs).indexOf(inputKey);
 
+    // Build JSON v1 format
+    const planNodes = [];
+    const dataEdges = [];
+    const outputs = [];
+
+    // Process nodes
     for (const idStr of Object.keys(nodes)) {
       const id = +idStr;
       const n = nodes[idStr];
-      const tail = [];
+      const params = {};
       
       // Extract parameters from node data based on component spec
       const component = comps[n.name];
@@ -326,19 +386,19 @@
         component.typeSpec.params.forEach(paramSpec => {
           const value = n.data[paramSpec.name];
           if (value !== undefined && value !== null) {
-            if (paramSpec.type === 'string') {
-              // Handle strings with spaces
-              tail.push(`${paramSpec.name}=${String(value).replace(/\s+/g,'_')}`);
-            } else {
-              tail.push(`${paramSpec.name}=${value}`);
-            }
+            params[paramSpec.name] = value;
           }
         });
       }
       
-      lines.push(`NODE ${id} ${n.name}${tail.length ? ' ' + tail.join(' ') : ''}`);
+      planNodes.push({
+        id: id,
+        type: n.name,
+        params: params
+      });
     }
 
+    // Process connections (data edges)
     for (const idStr of Object.keys(nodes)) {
       const id = +idStr;
       const n = nodes[idStr];
@@ -348,27 +408,51 @@
           const fromId = c.node;
           const fromNode = nodes[String(fromId)];
           const idxOut = Math.max(0, outIdxOf(fromNode, c.output));
-          lines.push(`CONNECTION ${fromId} ${idxOut} ${id} ${idxIn}`);
+          dataEdges.push({
+            from: fromId,
+            fromOutput: idxOut,
+            to: id,
+            toInput: idxIn
+          });
         }
       }
     }
 
+    // Process outputs
     for (const idStr of Object.keys(nodes)) {
       const n = nodes[idStr];
       if (n.name === 'OutputNumber' || n.name === 'OutputString') {
-        lines.push(`OUTPUT ${+idStr} 0`);
+        outputs.push({
+          node: +idStr,
+          output: 0
+        });
       }
     }
 
-    return lines.join('\n') + '\n';
+    // Return JSON v1 format
+    return JSON.stringify({
+      version: 1,
+      nodes: planNodes,
+      edges: {
+        data: dataEdges,
+        control: []
+      },
+      outputs: outputs
+    }, null, 2);
   }
 
   async function runBackend() {
-    const plan = exportPlan();
+    // Check for legacy format flag (e.g., from URL parameter)
+    const urlParams = new URLSearchParams(window.location.search);
+    const useLegacy = urlParams.get('legacy') === 'true';
+    
+    const plan = exportPlan(useLegacy);
+    const contentType = useLegacy ? 'text/plain' : 'application/json';
+    
     try {
       const r = await fetch('/run', {
         method: 'POST',
-        headers: { 'Content-Type': 'text/plain' },
+        headers: { 'Content-Type': contentType },
         body: plan
       });
       const txt = await r.text();
