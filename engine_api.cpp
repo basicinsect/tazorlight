@@ -155,6 +155,59 @@ static std::string nodeTypeToJson(const NodeType& nodeType) {
     return json.str();
 }
 
+// ========= Template Helpers for Node Families =========
+
+// Template helper for Add<T> node family
+template<Type T>
+NodeType createAddNode() {
+    static_assert(T == Type::Number, "Add template currently only supports Number type");
+    
+    return NodeType{
+        "AddNumber", {T, T}, {T},
+        {}, // no parameters
+        "1.0.0", "Adds two numbers together",
+        [](Node& n, std::string& err)->bool {
+            if (n.inputValues.size() != 2 ||
+                n.inputValues[0].type != T ||
+                n.inputValues[1].type != T) { 
+                err = "AddNumber: invalid inputs"; 
+                return false; 
+            }
+            const double a = std::get<double>(n.inputValues[0].data);
+            const double b = std::get<double>(n.inputValues[1].data);
+            n.outputValues.assign(1, Value::num(a + b));
+            return true;
+        }
+    };
+}
+
+// Template helper for Clamp<T> node family
+template<Type T>
+NodeType createClampNode() {
+    static_assert(T == Type::Number, "Clamp template currently only supports Number type");
+    
+    return NodeType{
+        "ClampNumber", {T, T, T}, {T},
+        {}, // no parameters
+        "1.0.0", "Clamps a value between min and max bounds",
+        [](Node& n, std::string& err)->bool {
+            if (n.inputValues.size() != 3 ||
+                n.inputValues[0].type != T ||
+                n.inputValues[1].type != T ||
+                n.inputValues[2].type != T) { 
+                err = "ClampNumber: invalid inputs (expects value, min, max)"; 
+                return false; 
+            }
+            const double value = std::get<double>(n.inputValues[0].data);
+            const double min_val = std::get<double>(n.inputValues[1].data);
+            const double max_val = std::get<double>(n.inputValues[2].data);
+            const double result = std::clamp(value, min_val, max_val);
+            n.outputValues.assign(1, Value::num(result));
+            return true;
+        }
+    };
+}
+
 struct Graph {
     std::unordered_map<int, std::unique_ptr<Node>> nodes;
     std::vector<Edge> edges;
@@ -195,20 +248,12 @@ struct Graph {
                 return true;
             }
         };
-        registry["Add"] = NodeType{
-            "Add", {Type::Number, Type::Number}, {Type::Number},
-            {}, // no parameters
-            "1.0.0", "Adds two numbers together",
-            [](Node& n, std::string& err)->bool {
-                if (n.inputValues.size() != 2 ||
-                    n.inputValues[0].type != Type::Number ||
-                    n.inputValues[1].type != Type::Number) { err = "Add: invalid inputs"; return false; }
-                const double a = std::get<double>(n.inputValues[0].data);
-                const double b = std::get<double>(n.inputValues[1].data);
-                n.outputValues.assign(1, Value::num(a + b));
-                return true;
-            }
-        };
+        // Register templated node families with concrete names
+        registry["AddNumber"] = createAddNode<Type::Number>();
+        registry["ClampNumber"] = createClampNode<Type::Number>();
+        
+        // Keep legacy "Add" for backward compatibility
+        registry["Add"] = registry["AddNumber"];
         registry["Multiply"] = NodeType{
             "Multiply", {Type::Number, Type::Number}, {Type::Number},
             {}, // no parameters
