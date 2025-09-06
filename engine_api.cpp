@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -224,11 +225,31 @@ struct Graph {
         };
         registry["ToString"] = NodeType{
             "ToString", {Type::Number}, {Type::String},
-            {}, // no parameters
-            "1.0.0", "Converts a number to string",
+            {ParamSpec{"format", Type::String, Value::str("default"), {"default", "fixed", "scientific", "hex"}, "Number formatting style"}},
+            "1.0.0", "Converts a number to string with formatting options",
             [](Node& n, std::string& err)->bool {
                 if (n.inputValues.size() != 1 || n.inputValues[0].type != Type::Number) { err = "ToString: invalid input"; return false; }
-                std::ostringstream os; os << std::get<double>(n.inputValues[0].data);
+                
+                // Get format parameter
+                std::string format = "default";
+                auto it = n.params.find("format");
+                if (it != n.params.end() && it->second.type == Type::String) {
+                    format = std::get<std::string>(it->second.data);
+                }
+                
+                double value = std::get<double>(n.inputValues[0].data);
+                std::ostringstream os;
+                
+                if (format == "fixed") {
+                    os << std::fixed << value;
+                } else if (format == "scientific") {
+                    os << std::scientific << value;
+                } else if (format == "hex") {
+                    os << std::hex << (int)value;
+                } else {
+                    os << value; // default
+                }
+                
                 n.outputValues.assign(1, Value::str(os.str()));
                 return true;
             }
