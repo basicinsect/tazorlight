@@ -64,200 +64,245 @@
   );
 
   // --- sockets ---
-  const numSocket = new Rete.Socket('Number');
-  const strSocket = new Rete.Socket('String');
+  const sockets = {};
+  function getSocket(type) {
+    if (!sockets[type]) {
+      sockets[type] = new Rete.Socket(type);
+    }
+    return sockets[type];
+  }
+  
+  // Create standard sockets
+  const numSocket = getSocket('number');
+  const strSocket = getSocket('string');
+  const boolSocket = getSocket('bool');
 
-  // --- controls ---
-  class NumControl extends Rete.Control {
-    constructor(emitter, key, initial = 0) {
+  // --- dynamic controls ---
+  class DynamicControl extends Rete.Control {
+    constructor(emitter, key, paramSpec) {
       super(key);
       this.render = 'vue';
       this.key = key;
       this.emitter = emitter;
+      this.paramSpec = paramSpec;
+      
+      let template, inputHandler;
+      const initial = this.getInitialValue();
+      
+      if (paramSpec.type === 'number') {
+        template = `<input type="number" :value="getData(ikey) ?? ${initial}" @input="change($event)" style="width:100px"/>`;
+        inputHandler = (e) => +e.target.value;
+      } else if (paramSpec.type === 'bool') {
+        template = `<input type="checkbox" :checked="getData(ikey) ?? ${initial}" @change="change($event)"/>`;
+        inputHandler = (e) => e.target.checked;
+      } else if (paramSpec.enum && paramSpec.enum.length > 0) {
+        const options = paramSpec.enum.map(opt => `<option value="${opt}">${opt}</option>`).join('');
+        template = `<select :value="getData(ikey) ?? '${initial}'" @change="change($event)" style="width:120px"><option value="">[Select]</option>${options}</select>`;
+        inputHandler = (e) => e.target.value;
+      } else {
+        // string or unknown - default to text
+        template = `<input type="text" :value="getData(ikey) ?? '${initial}'" @input="change($event)" style="width:160px"/>`;
+        inputHandler = (e) => e.target.value;
+      }
+      
       this.component = {
         props: ['emitter', 'ikey', 'getData', 'putData'],
-        template: `<input type="number" :value="getData(ikey) ?? ${initial}" @input="change($event)" style="width:100px"/>`,
+        template,
         methods: {
           change(e) {
-            this.putData(this.ikey, +e.target.value);
+            this.putData(this.ikey, inputHandler(e));
             this.emitter.trigger('process');
           }
         }
       };
       this.props = { emitter, ikey: key };
     }
+    
+    getInitialValue() {
+      const defaultVal = this.paramSpec.default;
+      if (this.paramSpec.type === 'number') return defaultVal || 0;
+      if (this.paramSpec.type === 'bool') return defaultVal || false;
+      if (this.paramSpec.type === 'string') return defaultVal || '';
+      return defaultVal || '';
+    }
   }
 
-  class TextControl extends Rete.Control {
-    constructor(emitter, key, initial = '') {
-      super(key);
-      this.render = 'vue';
-      this.key = key;
-      this.emitter = emitter;
-      this.component = {
-        props: ['emitter', 'ikey', 'getData', 'putData'],
-        template: `<input type="text" :value="getData(ikey) ?? '${initial}'" @input="change($event)" style="width:160px"/>`,
-        methods: {
-          change(e) {
-            this.putData(this.ikey, e.target.value);
-            this.emitter.trigger('process');
+  // --- dynamic component generator ---
+  function createDynamicComponent(typeSpec) {
+    return class extends Rete.Component {
+      constructor() {
+        super(typeSpec.name);
+        this.typeSpec = typeSpec;
+      }
+      
+      builder(node) {
+        // Add inputs
+        typeSpec.inputs.forEach((inputType, index) => {
+          const socket = getSocket(inputType);
+          const input = new Rete.Input(`in${index}`, `Input ${index + 1}`, socket);
+          node.addInput(input);
+        });
+        
+        // Add outputs
+        typeSpec.outputs.forEach((outputType, index) => {
+          const socket = getSocket(outputType);
+          const output = new Rete.Output(`out${index}`, `Output ${index + 1}`, socket);
+          node.addOutput(output);
+        });
+        
+        // Add parameter controls
+        typeSpec.params.forEach(paramSpec => {
+          const ctrl = new DynamicControl(this.editor, paramSpec.name, paramSpec);
+          node.addControl(ctrl);
+        });
+        
+        return node;
+      }
+      
+      worker(node, inputs, outputs) {
+        // For dynamic components, we don't do local computation since the backend handles it
+        // This is just to make Rete.js happy - actual computation happens in the backend
+        typeSpec.outputs.forEach((outputType, index) => {
+          const outputKey = `out${index}`;
+          if (typeSpec.inputs.length === 0) {
+            // Parameter-based node (like Number, String)
+            if (typeSpec.name === 'Number' && node.data.value !== undefined) {
+              outputs[outputKey] = node.data.value;
+            } else if (typeSpec.name === 'String' && node.data.text !== undefined) {
+              outputs[outputKey] = node.data.text;
+            } else {
+              outputs[outputKey] = null;
+            }
+          } else {
+            // Input-based node - outputs depend on inputs (handled by backend)
+            outputs[outputKey] = null;
           }
-        }
-      };
-      this.props = { emitter, ikey: key };
+        });
+      }
+    };
+  }
+
+  // --- API functions ---
+  async function loadNodeTypes() {
+    try {
+      const response = await fetch('/types');
+      if (!response.ok) {
+        throw new Error(`Failed to load types: ${response.statusText}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error('Error loading node types:', error);
+      throw error;
     }
   }
 
-  // --- components ---
-  class NumberComponent extends Rete.Component {
-    constructor() { super('Number'); }
-    builder(node) {
-      const out = new Rete.Output('out', 'Number', numSocket);
-      const ctrl = new NumControl(this.editor, 'value', 0);
-      return node.addControl(ctrl).addOutput(out);
-    }
-    worker(node, inputs, outputs) {
-      outputs['out'] = node.data.value ?? 0;
-    }
-  }
-
-  class StringComponent extends Rete.Component {
-    constructor() { super('String'); }
-    builder(node) {
-      const out = new Rete.Output('out', 'String', strSocket);
-      const ctrl = new TextControl(this.editor, 'text', '');
-      return node.addControl(ctrl).addOutput(out);
-    }
-    worker(node, inputs, outputs) {
-      outputs['out'] = node.data.text ?? '';
+  async function loadTypeSpec(typeName) {
+    try {
+      const response = await fetch(`/types/${typeName}`);
+      if (!response.ok) {
+        throw new Error(`Failed to load type spec for ${typeName}: ${response.statusText}`);
+      }
+      return await response.json();
+    } catch (error) {
+      console.error(`Error loading type spec for ${typeName}:`, error);
+      throw error;
     }
   }
 
-  class AddComponent extends Rete.Component {
-    constructor() { super('Add'); }
-    builder(node) {
-      const a = new Rete.Input('a', 'A', numSocket);
-      const b = new Rete.Input('b', 'B', numSocket);
-      const out = new Rete.Output('out', 'Number', numSocket);
-      return node.addInput(a).addInput(b).addOutput(out);
-    }
-    worker(node, inputs, outputs) {
-      const A = inputs['a']?.[0] ?? 0;
-      const B = inputs['b']?.[0] ?? 0;
-      outputs['out'] = (+A) + (+B);
-    }
-  }
-
-  class MultiplyComponent extends Rete.Component {
-    constructor() { super('Multiply'); }
-    builder(node) {
-      const a = new Rete.Input('a', 'A', numSocket);
-      const b = new Rete.Input('b', 'B', numSocket);
-      const out = new Rete.Output('out', 'Number', numSocket);
-      return node.addInput(a).addInput(b).addOutput(out);
-    }
-    worker(node, inputs, outputs) {
-      const A = inputs['a']?.[0] ?? 0;
-      const B = inputs['b']?.[0] ?? 0;
-      outputs['out'] = (+A) * (+B);
-    }
-  }
-
-  class ToStringComponent extends Rete.Component {
-    constructor() { super('ToString'); }
-    builder(node) {
-      const inNum = new Rete.Input('in', 'Number', numSocket);
-      const out = new Rete.Output('out', 'String', strSocket);
-      return node.addInput(inNum).addOutput(out);
-    }
-    worker(node, inputs, outputs) {
-      const v = inputs['in']?.[0] ?? 0;
-      outputs['out'] = String(v);
-    }
-  }
-
-  class ConcatComponent extends Rete.Component {
-    constructor() { super('Concat'); }
-    builder(node) {
-      const a = new Rete.Input('a', 'A', strSocket);
-      const b = new Rete.Input('b', 'B', strSocket);
-      const out = new Rete.Output('out', 'String', strSocket);
-      return node.addInput(a).addInput(b).addOutput(out);
-    }
-    worker(node, inputs, outputs) {
-      const A = inputs['a']?.[0] ?? '';
-      const B = inputs['b']?.[0] ?? '';
-      outputs['out'] = String(A) + String(B);
-    }
-  }
-
-  class OutputNumberComponent extends Rete.Component {
-    constructor() { super('OutputNumber'); }
-    builder(node) {
-      const inp = new Rete.Input('in', 'Number', numSocket);
-      const out = new Rete.Output('out', 'Number', numSocket);
-      return node.addInput(inp).addOutput(out);
-    }
-    worker(node, inputs, outputs) {
-      outputs['out'] = inputs['in']?.[0] ?? 0;
-    }
-  }
-  class OutputStringComponent extends Rete.Component {
-    constructor() { super('OutputString'); }
-    builder(node) {
-      const inp = new Rete.Input('in', 'String', strSocket);
-      const out = new Rete.Output('out', 'String', strSocket);
-      return node.addInput(inp).addOutput(out);
-    }
-    worker(node, inputs, outputs) {
-      outputs['out'] = inputs['in']?.[0] ?? '';
-    }
-  }
-
-  // --- editor + engine ---
+  // --- editor + engine setup ---
   const editor = new Rete.NodeEditor('tazor@0.1.0', container);
   editor.use(ConnectionPlugin);
   editor.use(VueRenderPlugin);
 
   const engine = new Rete.Engine('tazor@0.1.0');
 
-  const comps = {
-    Number: new NumberComponent(),
-    String: new StringComponent(),
-    Add: new AddComponent(),
-    Multiply: new MultiplyComponent(),
-    ToString: new ToStringComponent(),
-    Concat: new ConcatComponent(),
-    OutputNumber: new OutputNumberComponent(),
-    OutputString: new OutputStringComponent(),
-  };
+  // Dynamic components storage
+  let comps = {};
+  let nodeTypes = [];
 
-  Object.values(comps).forEach(c => { editor.register(c); engine.register(c); });
+  // Initialize dynamic components
+  async function initializeDynamicComponents() {
+    try {
+      // Load available node types
+      nodeTypes = await loadNodeTypes();
+      console.log('Loaded node types:', nodeTypes);
+      
+      // Load specs and create components for each type
+      for (const typeName of nodeTypes) {
+        const typeSpec = await loadTypeSpec(typeName);
+        console.log(`Loaded spec for ${typeName}:`, typeSpec);
+        
+        const ComponentClass = createDynamicComponent(typeSpec);
+        const component = new ComponentClass();
+        comps[typeName] = component;
+        
+        editor.register(component);
+        engine.register(component);
+      }
+      
+      // Generate dynamic palette
+      generateDynamicPalette();
+      
+      console.log('✅ Dynamic components initialized');
+    } catch (error) {
+      console.error('❌ Failed to initialize dynamic components:', error);
+      // Show error to user
+      resultsEl.textContent = `Error: Failed to load node types - ${error.message}`;
+    }
+  }
+
+  // Generate dynamic palette buttons
+  function generateDynamicPalette() {
+    const toolbar = document.querySelector('.toolbar');
+    
+    // Remove old hardcoded buttons (except Run button)
+    const buttonsToRemove = toolbar.querySelectorAll('button:not(#btn-run)');
+    buttonsToRemove.forEach(btn => btn.remove());
+    
+    // Add dynamic buttons
+    nodeTypes.forEach((typeName, index) => {
+      const button = document.createElement('button');
+      button.textContent = `Add ${typeName}`;
+      button.onclick = () => addNode(typeName, getDefaultData(typeName), [80 + (index % 4) * 200, 200 + Math.floor(index / 4) * 60]);
+      toolbar.insertBefore(button, toolbar.lastElementChild); // Insert before Run button
+    });
+  }
+
+  // Get default data for a node type
+  function getDefaultData(typeName) {
+    const component = comps[typeName];
+    if (!component || !component.typeSpec) return {};
+    
+    const data = {};
+    component.typeSpec.params.forEach(param => {
+      data[param.name] = param.default;
+    });
+    return data;
+  }
 
   // quick add helpers
   async function addNode(componentName, data = {}, pos = [80, 80]) {
     const c = comps[componentName];
+    if (!c) {
+      console.error(`Component ${componentName} not found`);
+      return null;
+    }
     const n = await c.createNode(data);
     n.position = pos;
     editor.addNode(n);
     return n;
   }
 
-  document.getElementById('btn-add-number').onclick = () => addNode('Number', { value: 0 }, [80, 200]);
-  document.getElementById('btn-add-string').onclick = () => addNode('String', { text: '' }, [80, 220]);
-  document.getElementById('btn-add-add').onclick = () => addNode('Add', {}, [320, 200]);
-  document.getElementById('btn-add-mul').onclick = () => addNode('Multiply', {}, [320, 260]);
-  document.getElementById('btn-add-tostr').onclick = () => addNode('ToString', {}, [560, 220]);
-  document.getElementById('btn-add-concat').onclick = () => addNode('Concat', {}, [560, 280]);
-  document.getElementById('btn-add-output-num').onclick = () => addNode('OutputNumber', {}, [800, 200]);
-  document.getElementById('btn-add-output-str').onclick = () => addNode('OutputString', {}, [800, 260]);
-
   const process = async () => {
     await engine.abort();
     await engine.process(editor.toJSON());
   };
-  editor.on('process nodecreated noderemoved connectioncreated connectionremoved', process);
-  process();
+  
+  // Initialize the dynamic system and start processing
+  initializeDynamicComponents().then(() => {
+    editor.on('process nodecreated noderemoved connectioncreated connectionremoved', process);
+    process();
+  });
 
   // export plan for backend
   function exportPlan() {
@@ -274,8 +319,23 @@
       const id = +idStr;
       const n = nodes[idStr];
       const tail = [];
-      if (n.name === 'Number' && typeof n.data.value === 'number') tail.push(`value=${n.data.value}`);
-      if (n.name === 'String' && typeof n.data.text === 'string') tail.push(`text=${(n.data.text||'').replace(/\s+/g,'_')}`);
+      
+      // Extract parameters from node data based on component spec
+      const component = comps[n.name];
+      if (component && component.typeSpec && component.typeSpec.params) {
+        component.typeSpec.params.forEach(paramSpec => {
+          const value = n.data[paramSpec.name];
+          if (value !== undefined && value !== null) {
+            if (paramSpec.type === 'string') {
+              // Handle strings with spaces
+              tail.push(`${paramSpec.name}=${String(value).replace(/\s+/g,'_')}`);
+            } else {
+              tail.push(`${paramSpec.name}=${value}`);
+            }
+          }
+        });
+      }
+      
       lines.push(`NODE ${id} ${n.name}${tail.length ? ' ' + tail.join(' ') : ''}`);
     }
 

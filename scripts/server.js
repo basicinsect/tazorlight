@@ -41,6 +41,96 @@ app.get('/set', (req, res) => {
   res.send('OK');
 });
 
+// Node types API endpoints
+app.get('/types', (req, res) => {
+  const luaScript = path.join(__dirname, 'lua', 'list_types.lua');
+  const luajitCmd = resolveLuajit();
+  
+  if (!luajitCmd) {
+    return res.status(500).json({
+      error: 'LuaJIT not found. Build the vendored ./luajit (see scripts/build_luajit.sh) or install system luajit, or set $LUAJIT.',
+    });
+  }
+
+  // Include local libs so luajit runs without system install
+  const extraLibDirs = [
+    path.join(repoRoot, 'scripts', 'bin'),
+    path.join(repoRoot, 'luajit', 'src'),
+  ];
+  const env = {
+    ...process.env,
+    LD_LIBRARY_PATH: [extraLibDirs.join(':'), process.env.LD_LIBRARY_PATH || '']
+      .filter(Boolean)
+      .join(':'),
+  };
+
+  const result = spawnSync(luajitCmd, [luaScript], {
+    encoding: 'utf8',
+    cwd: repoRoot,
+    env,
+  });
+
+  if (result.error) {
+    console.error(result.error);
+    return res.status(500).json({ error: String(result.error) });
+  }
+
+  const stdout = (result.stdout || '').trim();
+  const stderr = (result.stderr || '').trim();
+
+  if (result.status !== 0) {
+    if (stderr) return res.status(400).type('application/json').send(stderr);
+    return res.status(400).json({ error: 'Failed to list types' });
+  }
+
+  res.type('application/json').send(stdout || '[]');
+});
+
+app.get('/types/:typeName', (req, res) => {
+  const typeName = req.params.typeName;
+  const luaScript = path.join(__dirname, 'lua', 'get_type_spec.lua');
+  const luajitCmd = resolveLuajit();
+  
+  if (!luajitCmd) {
+    return res.status(500).json({
+      error: 'LuaJIT not found. Build the vendored ./luajit (see scripts/build_luajit.sh) or install system luajit, or set $LUAJIT.',
+    });
+  }
+
+  // Include local libs so luajit runs without system install
+  const extraLibDirs = [
+    path.join(repoRoot, 'scripts', 'bin'),
+    path.join(repoRoot, 'luajit', 'src'),
+  ];
+  const env = {
+    ...process.env,
+    LD_LIBRARY_PATH: [extraLibDirs.join(':'), process.env.LD_LIBRARY_PATH || '']
+      .filter(Boolean)
+      .join(':'),
+  };
+
+  const result = spawnSync(luajitCmd, [luaScript, typeName], {
+    encoding: 'utf8',
+    cwd: repoRoot,
+    env,
+  });
+
+  if (result.error) {
+    console.error(result.error);
+    return res.status(500).json({ error: String(result.error) });
+  }
+
+  const stdout = (result.stdout || '').trim();
+  const stderr = (result.stderr || '').trim();
+
+  if (result.status !== 0) {
+    if (stderr) return res.status(400).type('application/json').send(stderr);
+    return res.status(404).json({ error: `Type '${typeName}' not found` });
+  }
+
+  res.type('application/json').send(stdout || '{}');
+});
+
 app.post('/run', express.text({ type: '*/*', limit: '1mb' }), (req, res) => {
   const plan = req.body || '';
   const luaScript = path.join(__dirname, 'lua', 'run_graph.lua');
