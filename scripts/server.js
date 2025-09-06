@@ -1,11 +1,37 @@
 const express = require('express');
 const { spawnSync } = require('child_process');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const port = 3000;
 
 const repoRoot = path.join(__dirname, '..'); // run LuaJIT from repo root so ./libengine.so resolves
+
+function resolveLuajit() {
+  const env = process.env.LUAJIT || process.env.LUAJIT_PATH;
+  const candidates = [
+    env,
+    // Prefer a locally built binary first
+    path.join(repoRoot, 'scripts', 'bin', 'luajit'),
+    path.join(repoRoot, 'luajit', 'src', 'luajit'),
+    // System-wide fallbacks
+    'luajit',
+    '/usr/local/bin/luajit',
+    '/usr/bin/luajit',
+  ].filter(Boolean);
+
+  for (const c of candidates) {
+    try {
+      const r = spawnSync(c, ['-v'], { encoding: 'utf8' });
+      const out = (r.stdout || '') + (r.stderr || '');
+      if (!r.error && /LuaJIT/i.test(out)) return c;
+    } catch (_) {
+      // try next candidate
+    }
+  }
+  return null;
+}
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -19,10 +45,30 @@ app.post('/run', express.text({ type: '*/*', limit: '1mb' }), (req, res) => {
   const plan = req.body || '';
   const luaScript = path.join(__dirname, 'lua', 'run_graph.lua');
 
-  const result = spawnSync('luajit', [luaScript], {
+  const luajitCmd = resolveLuajit();
+  if (!luajitCmd) {
+    return res.status(500).json({
+      error: 'LuaJIT not found. Build the vendored ./luajit (see scripts/build_luajit.sh) or install system luajit, or set $LUAJIT.',
+    });
+  }
+
+  // Include local libs so luajit runs without system install
+  const extraLibDirs = [
+    path.join(repoRoot, 'scripts', 'bin'),
+    path.join(repoRoot, 'luajit', 'src'),
+  ];
+  const env = {
+    ...process.env,
+    LD_LIBRARY_PATH: [extraLibDirs.join(':'), process.env.LD_LIBRARY_PATH || '']
+      .filter(Boolean)
+      .join(':'),
+  };
+
+  const result = spawnSync(luajitCmd, [luaScript], {
     input: plan,
     encoding: 'utf8',
     cwd: repoRoot, // critical: lets run_graph.lua load "./libengine.so"
+    env,
   });
 
   if (result.error) {
