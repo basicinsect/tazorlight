@@ -156,6 +156,22 @@ static std::string nodeTypeToJson(const NodeType& nodeType) {
 }
 
 // ========= Template Helpers for Node Families =========
+//
+// This system implements templated node families that can generate concrete
+// node types for different data types while maintaining a simple C ABI.
+//
+// Design Principles:
+// 1. Template helpers generate NodeType instances for specific types
+// 2. Concrete registrations expose type-specific names (e.g., "AddNumber", "ClampNumber")  
+// 3. No template syntax exposed in C API - only concrete names
+// 4. Reuse compute logic across types while maintaining type safety
+//
+// Usage:
+// - To add a new template: Create a createMyNodeTemplate<T>() function
+// - To register concrete instances: Call template function with specific types
+// - To extend to new types: Add new template specializations and registrations
+//
+// Example: createAddNode<Type::Number>() generates "AddNumber" node type
 
 // Template helper for Add<T> node family
 template<Type T>
@@ -181,7 +197,7 @@ NodeType createAddNode() {
     };
 }
 
-// Template helper for Clamp<T> node family
+// Template helper for Clamp<T> node family  
 template<Type T>
 NodeType createClampNode() {
     static_assert(T == Type::Number, "Clamp template currently only supports Number type");
@@ -248,12 +264,17 @@ struct Graph {
                 return true;
             }
         };
-        // Register templated node families with concrete names
+        
+        // ========= Templated node families with concrete registrations =========
+        // These use template helpers to generate type-specific compute functions
+        // while exposing concrete names to the C API (no template syntax)
         registry["AddNumber"] = createAddNode<Type::Number>();
         registry["ClampNumber"] = createClampNode<Type::Number>();
         
-        // Keep legacy "Add" for backward compatibility
+        // Keep legacy "Add" for backward compatibility - maps to AddNumber
         registry["Add"] = registry["AddNumber"];
+        
+        // ========= Other built-in nodes =========
         registry["Multiply"] = NodeType{
             "Multiply", {Type::Number, Type::Number}, {Type::Number},
             {}, // no parameters
