@@ -235,6 +235,10 @@ local function parse_json_plan(g, data, ensure_ok)
         if not ensure_ok(lib.engine_graph_set_param_number(g, id, key, num), "set_param_number "..key) then 
           return nil 
         end
+      elseif type(value) == "boolean" then
+        if not ensure_ok(lib.engine_graph_set_param_bool(g, id, key, value and 1 or 0), "set_param_bool "..key) then 
+          return nil 
+        end
       else
         if not ensure_ok(lib.engine_graph_set_param_string(g, id, key, tostring(value)), "set_param_string "..key) then 
           return nil 
@@ -258,7 +262,7 @@ local function parse_json_plan(g, data, ensure_ok)
   -- Add outputs
   for _, output in ipairs(outputs) do
     local nodeId = output.node or output["node"]
-    local outputIdx = output.output or output["output"] or 0
+    local outputIdx = output.outIdx or output.output or output["output"] or 0
     
     if not ensure_ok(lib.engine_graph_add_output(g, nodeId, outputIdx), "add_output") then 
       return nil 

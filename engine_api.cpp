@@ -67,6 +67,16 @@ struct NodeType {
 struct Edge { int fromNode; int fromOut; int toNode; int toIn; };
 struct OutputPin { int node; int outIdx; };
 
+// Control flow edge - represents conditional execution dependency
+struct ControlEdge { int fromNode; int fromOut; int toNode; bool condition; };
+
+enum class NodeExecutionState { 
+    PENDING,    // Not yet executed
+    ACTIVE,     // Should execute (in active branch)
+    SKIPPED,    // Skipped (in inactive branch)
+    COMPLETED   // Execution completed
+};
+
 // JSON generation helpers
 static std::string escapeJson(const std::string& str) {
     std::string escaped;
@@ -230,6 +240,10 @@ struct Graph {
     std::vector<OutputPin> outputs;
     std::unordered_map<std::string, NodeType> registry;
     std::string lastError;
+    
+    // Control flow tracking
+    std::unordered_map<int, NodeExecutionState> executionStates;
+    std::vector<ControlEdge> controlEdges;
 
     Graph() { registerBuiltins(); }
 
@@ -261,6 +275,18 @@ struct Graph {
                 auto it = n.params.find("text");
                 if (it != n.params.end() && it->second.type == Type::String) s = std::get<std::string>(it->second.data);
                 n.outputValues.assign(1, Value::str(std::move(s)));
+                return true;
+            }
+        };
+        registry["Bool"] = NodeType{
+            "Bool", {}, {Type::Bool},
+            {ParamSpec{"value", Type::Bool, Value::boolean(false), {}, "The boolean value"}},
+            "1.0.0", "A constant boolean node",
+            [](Node& n, std::string&)->bool {
+                bool v = false;
+                auto it = n.params.find("value");
+                if (it != n.params.end() && it->second.type == Type::Bool) v = std::get<bool>(it->second.data);
+                n.outputValues.assign(1, Value::boolean(v));
                 return true;
             }
         };
@@ -354,6 +380,50 @@ struct Graph {
                 return true;
             }
         };
+        
+        // ========= Control Flow Nodes =========
+        registry["If"] = NodeType{
+            "If", {Type::Bool}, {Type::Bool, Type::Bool}, // condition input, then/else outputs
+            {}, // no parameters
+            "1.0.0", "Conditional branching node - routes execution based on boolean condition",
+            [](Node& n, std::string& err)->bool {
+                if (n.inputValues.size() != 1 || n.inputValues[0].type != Type::Bool) { 
+                    err = "If node expects Bool condition input"; 
+                    return false; 
+                }
+                bool condition = std::get<bool>(n.inputValues[0].data);
+                std::cout << "If node: condition=" << (condition ? "true" : "false") << std::endl;
+                // then output (index 0) = condition, else output (index 1) = !condition
+                n.outputValues.clear();
+                n.outputValues.push_back(Value::boolean(condition));   // then
+                n.outputValues.push_back(Value::boolean(!condition));  // else
+                std::cout << "If node outputs: then=" << (condition ? "true" : "false") 
+                         << ", else=" << (!condition ? "true" : "false") << std::endl;
+                return true;
+            }
+        };
+        
+        registry["Merge"] = NodeType{
+            "Merge", {Type::Number, Type::Number}, {Type::Number}, // then_input, else_input, output
+            {}, // no parameters  
+            "1.0.0", "Merges data from conditional branches - passes through the active input",
+            [](Node& n, std::string& err)->bool {
+                if (n.inputValues.size() != 2) { 
+                    err = "Merge node expects 2 inputs (then_input, else_input)"; 
+                    return false; 
+                }
+                // For now, use the first input that has a valid value (non-zero for number)
+                // In the future, this will be enhanced with proper control flow tracking
+                double then_val = 0.0, else_val = 0.0;
+                if (n.inputValues[0].type == Type::Number) then_val = std::get<double>(n.inputValues[0].data);
+                if (n.inputValues[1].type == Type::Number) else_val = std::get<double>(n.inputValues[1].data);
+                
+                // Simple merge logic: use then_val if non-zero, otherwise use else_val
+                double result = (then_val != 0.0) ? then_val : else_val;
+                n.outputValues.assign(1, Value::num(result));
+                return true;
+            }
+        };
     }
 };
 
@@ -375,7 +445,7 @@ static eng_type_t toC(eng::Type t) {
     return ENG_TYPE_NUMBER;
 }
 
-// Build inputs mapping and verify DAG (Kahn)
+// Build inputs mapping and verify DAG (Kahn), also analyze control flow
 static bool build_schedule(eng::Graph& g,
                            std::unordered_map<int, std::vector<std::pair<int,int>>>& inputs,
                            std::string& err_out) {
@@ -383,17 +453,33 @@ static bool build_schedule(eng::Graph& g,
     std::unordered_map<int, std::vector<eng::Edge>> fanout;
     indeg.reserve(g.nodes.size());
 
-    for (auto& kv : g.nodes) indeg[kv.first] = 0;
+    // Initialize execution states
+    for (auto& kv : g.nodes) {
+        indeg[kv.first] = 0;
+        g.executionStates[kv.first] = NodeExecutionState::PENDING;
+    }
+    
+    // Analyze edges for control flow
+    g.controlEdges.clear();
     for (const auto& e : g.edges) {
         fanout[e.fromNode].push_back(e);
         indeg[e.toNode]++;
+        
         // Build inputs map by target slot
         auto& vec = inputs[e.toNode];
         if ((int)vec.size() <= e.toIn) vec.resize(e.toIn + 1, {-1,-1});
         vec[e.toIn] = { e.fromNode, e.fromOut };
+        
+        // Check if this is a control edge from an If node
+        Node* fromNode = g.getNode(e.fromNode);
+        if (fromNode && fromNode->type->name == "If") {
+            // This is a control edge
+            bool condition = (e.fromOut == 0); // 0=then, 1=else
+            g.controlEdges.push_back({e.fromNode, e.fromOut, e.toNode, condition});
+        }
     }
 
-    // Kahn
+    // Kahn algorithm for topological sorting
     std::vector<int> q;
     for (auto& kv : indeg) if (kv.second == 0) q.push_back(kv.first);
     for (size_t i = 0; i < q.size(); ++i) {
@@ -408,14 +494,15 @@ static bool build_schedule(eng::Graph& g,
     return true;
 }
 
-// Taskflow-powered execution.
-// Runs node tasks in parallel with precedence constraints.
+// Taskflow-powered execution with conditional branching support.
+// Runs node tasks in parallel with precedence constraints and control flow.
 static bool runGraphTaskflow(eng::Graph& g) {
     // Prepare default input/output buffers
     for (auto& kv : g.nodes) {
         auto* n = kv.second.get();
         n->inputValues.assign(n->type->inputs.size(), eng::Value::num(0.0));
         n->outputValues.clear();
+        g.executionStates[kv.first] = NodeExecutionState::PENDING;
     }
 
     // Build inputs mapping and verify DAG
@@ -434,13 +521,49 @@ static bool runGraphTaskflow(eng::Graph& g) {
     std::mutex err_mtx;
     bool failed = false;
 
-    // Create one task per node
+    // Create tasks and conditional logic
     for (auto& kv : g.nodes) {
         const int id = kv.first;
-        auto task = tf.emplace([&, id]() {
+        
+        // Check if this node is controlled by an If statement
+        bool isControlled = false;
+        int controllingIfNode = -1;
+        bool shouldExecuteOnTrue = false;
+        
+        for (const auto& ctrl : g.controlEdges) {
+            if (ctrl.toNode == id) {
+                isControlled = true;
+                controllingIfNode = ctrl.fromNode;
+                shouldExecuteOnTrue = ctrl.condition;
+                break;
+            }
+        }
+        
+        auto task = tf.emplace([&, id, isControlled, controllingIfNode, shouldExecuteOnTrue]() {
             if (failed) return; // cheap cancellation
 
             eng::Node* n = g.getNode(id);
+            
+            // If this node is controlled by an If statement, check the condition
+            if (isControlled && controllingIfNode != -1) {
+                eng::Node* ifNode = g.getNode(controllingIfNode);
+                if (!ifNode || ifNode->outputValues.empty()) {
+                    g.executionStates[id] = NodeExecutionState::SKIPPED;
+                    return; // Skip if If node hasn't executed or failed
+                }
+                
+                // Check if we should execute based on the If condition
+                bool ifCondition = std::get<bool>(ifNode->outputValues[0].data); // then output
+                bool shouldExecute = (shouldExecuteOnTrue == ifCondition);
+                
+                if (!shouldExecute) {
+                    g.executionStates[id] = NodeExecutionState::SKIPPED;
+                    std::cout << "Skipping node " << id << " (inactive branch)" << std::endl;
+                    return;
+                }
+            }
+            
+            g.executionStates[id] = NodeExecutionState::ACTIVE;
 
             // Pull inputs from upstream outputs according to mapping
             auto it = inputs.find(id);
@@ -465,22 +588,27 @@ static bool runGraphTaskflow(eng::Graph& g) {
             if (!n->type->compute(*n, err)) {
                 std::lock_guard<std::mutex> lk(err_mtx);
                 if (!failed) { g.setError(n->type->name + " compute failed: " + err); failed = true; }
+                return;
             }
+            
+            g.executionStates[id] = NodeExecutionState::COMPLETED;
+            std::cout << "Executed node " << id << " (" << n->type->name << ")" << std::endl;
         }).name(std::string("N") + std::to_string(id));
 
         tmap.emplace(id, std::move(task));
     }
 
-    // Wire precedences (edges)
+    // Wire precedences (edges) - but only for data dependencies, not control flow
     for (const auto& e : g.edges) {
         auto itA = tmap.find(e.fromNode);
         auto itB = tmap.find(e.toNode);
         if (itA != tmap.end() && itB != tmap.end()) {
+            // For If nodes, we still need the precedence to ensure If executes before controlled nodes
             itA->second.precede(itB->second);
         }
     }
 
-    std::cout << "Running the graph mfa neighbour!!" << std::endl;
+    std::cout << "Running the graph with conditional branching!" << std::endl;
     ex.run(tf).wait();
 
     if (failed) return false;
