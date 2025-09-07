@@ -392,13 +392,10 @@ struct Graph {
                     return false; 
                 }
                 bool condition = std::get<bool>(n.inputValues[0].data);
-                std::cout << "If node: condition=" << (condition ? "true" : "false") << std::endl;
                 // then output (index 0) = condition, else output (index 1) = !condition
                 n.outputValues.clear();
                 n.outputValues.push_back(Value::boolean(condition));   // then
                 n.outputValues.push_back(Value::boolean(!condition));  // else
-                std::cout << "If node outputs: then=" << (condition ? "true" : "false") 
-                         << ", else=" << (!condition ? "true" : "false") << std::endl;
                 return true;
             }
         };
@@ -412,14 +409,25 @@ struct Graph {
                     err = "Merge node expects 2 inputs (then_input, else_input)"; 
                     return false; 
                 }
-                // For now, use the first input that has a valid value (non-zero for number)
-                // In the future, this will be enhanced with proper control flow tracking
+                
+                // Enhanced merge logic: prioritize non-zero values
                 double then_val = 0.0, else_val = 0.0;
                 if (n.inputValues[0].type == Type::Number) then_val = std::get<double>(n.inputValues[0].data);
                 if (n.inputValues[1].type == Type::Number) else_val = std::get<double>(n.inputValues[1].data);
                 
-                // Simple merge logic: use then_val if non-zero, otherwise use else_val
-                double result = (then_val != 0.0) ? then_val : else_val;
+                // Smart merge: use non-zero value, prefer then_val if both are non-zero
+                double result = 0.0;
+                if (then_val != 0.0) {
+                    result = then_val;
+                    std::cout << "Merge: using then branch value " << then_val << std::endl;
+                } else if (else_val != 0.0) {
+                    result = else_val;
+                    std::cout << "Merge: using else branch value " << else_val << std::endl;
+                } else {
+                    result = then_val; // both are zero, use then
+                    std::cout << "Merge: both inputs zero, using then value " << then_val << std::endl;
+                }
+                
                 n.outputValues.assign(1, Value::num(result));
                 return true;
             }
@@ -521,44 +529,53 @@ static bool runGraphTaskflow(eng::Graph& g) {
     std::mutex err_mtx;
     bool failed = false;
 
+    // Create a map to track which nodes are controlled by which If nodes
+    std::unordered_map<int, std::vector<ControlEdge>> nodeControllers;
+    for (const auto& ctrl : g.controlEdges) {
+        nodeControllers[ctrl.toNode].push_back(ctrl);
+    }
+
     // Create tasks and conditional logic
     for (auto& kv : g.nodes) {
         const int id = kv.first;
         
-        // Check if this node is controlled by an If statement
-        bool isControlled = false;
-        int controllingIfNode = -1;
-        bool shouldExecuteOnTrue = false;
-        
-        for (const auto& ctrl : g.controlEdges) {
-            if (ctrl.toNode == id) {
-                isControlled = true;
-                controllingIfNode = ctrl.fromNode;
-                shouldExecuteOnTrue = ctrl.condition;
-                break;
-            }
-        }
-        
-        auto task = tf.emplace([&, id, isControlled, controllingIfNode, shouldExecuteOnTrue]() {
+        auto task = tf.emplace([&, id]() {
             if (failed) return; // cheap cancellation
 
             eng::Node* n = g.getNode(id);
             
-            // If this node is controlled by an If statement, check the condition
-            if (isControlled && controllingIfNode != -1) {
-                eng::Node* ifNode = g.getNode(controllingIfNode);
-                if (!ifNode || ifNode->outputValues.empty()) {
-                    g.executionStates[id] = NodeExecutionState::SKIPPED;
-                    return; // Skip if If node hasn't executed or failed
-                }
+            // Check if this node is controlled by any If statements
+            auto controlIt = nodeControllers.find(id);
+            if (controlIt != nodeControllers.end()) {
+                bool shouldExecute = false;
                 
-                // Check if we should execute based on the If condition
-                bool ifCondition = std::get<bool>(ifNode->outputValues[0].data); // then output
-                bool shouldExecute = (shouldExecuteOnTrue == ifCondition);
+                // Check all controlling If nodes
+                for (const auto& ctrl : controlIt->second) {
+                    eng::Node* ifNode = g.getNode(ctrl.fromNode);
+                    if (!ifNode || ifNode->outputValues.size() < 2) {
+                        continue; // If node hasn't executed yet, skip
+                    }
+                    
+                    // Get the If node's condition result
+                    bool ifCondition = std::get<bool>(ifNode->inputValues[0].data);
+                    
+                    // Check if this control path should be active
+                    bool pathActive = false;
+                    if (ctrl.condition && ifCondition) {
+                        pathActive = true; // "then" path and condition is true
+                    } else if (!ctrl.condition && !ifCondition) {
+                        pathActive = true; // "else" path and condition is false
+                    }
+                    
+                    if (pathActive) {
+                        shouldExecute = true;
+                        break;
+                    }
+                }
                 
                 if (!shouldExecute) {
                     g.executionStates[id] = NodeExecutionState::SKIPPED;
-                    std::cout << "Skipping node " << id << " (inactive branch)" << std::endl;
+                    std::cout << "Skipping node " << id << " (" << n->type->name << ") - inactive branch" << std::endl;
                     return;
                 }
             }
@@ -575,6 +592,10 @@ static bool runGraphTaskflow(eng::Graph& g) {
                     if (src < 0) continue;
                     eng::Node* up = g.getNode(src);
                     if (!up || sout < 0 || sout >= (int)up->outputValues.size()) {
+                        // For skipped nodes, just use default values
+                        if (g.executionStates[src] == NodeExecutionState::SKIPPED) {
+                            continue;
+                        }
                         std::lock_guard<std::mutex> lk(err_mtx);
                         if (!failed) { g.setError("Dangling edge or output index OOB"); failed = true; }
                         return;
