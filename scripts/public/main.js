@@ -128,11 +128,16 @@
   }
 
   // --- dynamic component generator ---
-  function createDynamicComponent(typeSpec) {
+  function createDynamicComponent(typeSpec, displayName) {
+    // displayName is the API type name (e.g., "Add") which may be an alias for
+    // a spec whose internal name is different (e.g., "AddNumber"). We use
+    // displayName for the Rete component name to ensure uniqueness and avoid
+    // duplicate registrations when aliases resolve to the same internal spec name.
     return class extends Rete.Component {
       constructor() {
-        super(typeSpec.name);
+        super(displayName || typeSpec.name);
         this.typeSpec = typeSpec;
+        this.internalName = typeSpec.name; // keep original for reference if needed
       }
       
       builder(node) {
@@ -224,20 +229,67 @@
   async function initializeDynamicComponents() {
     try {
       // Load available node types
-      nodeTypes = await loadNodeTypes();
-      console.log('Loaded node types:', nodeTypes);
-      
-      // Load specs and create components for each type
-      for (const typeName of nodeTypes) {
+      const rawTypeNames = await loadNodeTypes();
+      console.log('Loaded node types:', rawTypeNames);
+
+      // Load specs and group by internal spec name to collapse aliases
+      const groups = new Map(); // key: internalName, value: { spec, candidates: [apiName] }
+      const loadedSpecs = new Map(); // apiName -> spec
+      for (const typeName of rawTypeNames) {
         const typeSpec = await loadTypeSpec(typeName);
-        console.log(`Loaded spec for ${typeName}:`, typeSpec);
-        
-        const ComponentClass = createDynamicComponent(typeSpec);
+        loadedSpecs.set(typeName, typeSpec);
+        const key = typeSpec.name; // internal name from engine
+        if (!groups.has(key)) groups.set(key, { spec: typeSpec, candidates: [] });
+        groups.get(key).candidates.push(typeName);
+      }
+
+      // Choose preferred display name per group (prefer alias without primitive suffix)
+      const suffixes = ['Number', 'String', 'Bool'];
+      function pickPreferred(internalName, candidates) {
+        const noSuffix = candidates.find(n => !suffixes.some(s => n.endsWith(s)));
+        if (noSuffix) return noSuffix;
+        if (candidates.includes(internalName)) return internalName;
+        return candidates.slice().sort((a,b)=>a.length-b.length || a.localeCompare(b))[0];
+      }
+
+      const preferred = [];
+      for (const [internalName, grp] of groups.entries()) {
+        const displayName = pickPreferred(internalName, grp.candidates);
+        preferred.push({ displayName, spec: grp.spec });
+      }
+
+      // Sort for stable palette order
+      preferred.sort((a,b)=> a.displayName.localeCompare(b.displayName));
+
+      // Register only preferred components
+      comps = {};
+      nodeTypes = preferred.map(p => p.displayName);
+      for (const { displayName, spec } of preferred) {
+        console.log(`Registering '${displayName}' (spec '${spec.name}')`);
+        const ComponentClass = createDynamicComponent(spec, displayName);
         const component = new ComponentClass();
-        comps[typeName] = component;
-        
-        editor.register(component);
-        engine.register(component);
+        comps[displayName] = component;
+
+        try {
+          editor.register(component);
+        } catch (e) {
+          const msg = String(e || '');
+          if (/already registered/i.test(msg)) {
+            console.warn(`Editor: component '${displayName}' already registered, skipping.`);
+          } else {
+            throw e;
+          }
+        }
+        try {
+          engine.register(component);
+        } catch (e) {
+          const msg = String(e || '');
+          if (/already registered/i.test(msg)) {
+            console.warn(`Engine: component '${displayName}' already registered, skipping.`);
+          } else {
+            throw e;
+          }
+        }
       }
       
       // Generate dynamic palette
